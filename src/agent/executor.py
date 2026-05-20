@@ -48,14 +48,20 @@ class AgentExecutor:
     def cancel(self, execution_id: str) -> bool:
         """Cancel an active execution.
         
-        Stores a cancelled result so polling clients don't wait forever.
+        Cancels the asyncio task and stores a CANCELLED result so polling clients don't wait forever.
         """
-        if execution_id not in self._executions:
+        task = self._active_tasks.get(execution_id)
+        if task is None:
             return False
         
-        self._executions[execution_id]["status"] = "cancelled"
-        self._executions[execution_id]["result"] = ExecutionResult.CANCELLED.value
-        self._executions[execution_id]["updated_at"] = time.time()
+        task.cancel()
+        
+        # Store cancelled result
+        self._results[execution_id] = {
+            "execution_id": execution_id,
+            "result": ExecutionResult.CANCELLED.value,
+            "cancelled": True,
+        }
         return True
 
 
