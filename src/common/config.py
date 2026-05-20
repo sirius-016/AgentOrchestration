@@ -15,6 +15,7 @@ class Config:
     def load(self, path: str) -> None:
         with open(path) as f:
             self._data = json.load(f)
+        self._validate_limits()
 
     def _load_env_overrides(self) -> None:
         prefix = "AO_"
@@ -46,6 +47,24 @@ class Config:
 
     def set(self, key: str, value: Any) -> None:
         self._set_nested(key, value)
+
+    def _validate_limits(self) -> None:
+        """Validate sandbox resource limit configuration.
+        
+        Raises ValueError if any resource limit (cpu_time, memory_mb, disk_mb)
+        is not a positive number.
+        """
+        sandbox = self._data.get("sandbox", {})
+        limits = sandbox.get("limits", {})
+        
+        for field in ("cpu_time", "memory_mb", "disk_mb"):
+            if field in limits:
+                value = limits[field]
+                if not isinstance(value, (int, float)) or value <= 0:
+                    raise ValueError(
+                        f"sandbox.limits.{field} must be a positive number, got: {repr(value)}"
+                    )
+
 
     def to_dict(self) -> Dict:
         return self._data
