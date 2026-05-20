@@ -70,6 +70,76 @@ class AgentRegistry:
             self._index[group].remove(agent_id)
         return True
 
+
+    def set_permissions(self, agent_id: str, allowed_callers: Set[str]) -> None:
+        """Set which callers are allowed to access an agent.
+
+        Also bumps the permission version for this agent, invalidating
+        cached authorization decisions.
+        """
+        if agent_id not in self._agents:
+            raise ValueError(f"Agent {agent_id} not found")
+        self._permissions[agent_id] = set(allowed_callers)
+        # Bump permission version to invalidate cached auth decisions
+        self._auth_cache.bump_permission_version(agent_id)
+
+    def check_authorization(
+        self,
+        caller_id: str,
+        agent_id: str,
+        operation: str = "access",
+        recheck: bool = False,
+    ) -> bool:
+        """Check if a caller is authorized to perform an operation on an agent.
+
+        Uses cached decisions when available and recheck=False.
+        Always re-checks if recheck=True, then updates cache.
+
+        Permission changes (via set_permissions) automatically invalidate
+        cached decisions for affected agents.
+
+        Args:
+            caller_id: The ID of the calling principal
+            agent_id: The ID of the target agent
+            operation: The operation being attempted
+            recheck: Force re-check even if cached result exists
+
+        Returns:
+            True if authorized, False otherwise
+
+        Raises:
+            AuthorizationError: If the agent does not exist
+        """
+        if agent_id not in self._agents:
+            raise AuthorizationError(f"Agent {agent_id} not found")
+
+        # Check cache first (unless recheck is forced)
+        if not recheck:
+            cached = self._auth_cache.get(caller_id, agent_id, operation)
+            if cached is not None:
+                return cached
+
+        # Perform fresh authorization check
+        allowed_callers = self._permissions.get(agent_id, set())
+        # Open by default: allow if no permissions configured (open registry)
+        # or if caller is in the allowed list
+        allowed = len(allowed_callers) == 0 or caller_id in allowed_callers
+
+        # Cache the decision
+        self._auth_cache.set(caller_id, agent_id, operation, allowed,
+                            scope=agent_id)
+
+        return allowed
+
+    def on_permission_change(self, agent_id: str) -> None:
+        """Called when permissions change for an agent.
+
+        Invalidates all cached authorization decisions for this agent
+        so that the next access re-checks against the new permissions.
+        """
+        self._auth_cache.invalidate_agent(agent_id)
+        self._auth_cache.bump_permission_version(agent_id)
+
     def count(self) -> int:
         return len(self._agents)
 
