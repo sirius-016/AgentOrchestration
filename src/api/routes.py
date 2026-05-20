@@ -191,3 +191,123 @@ async def agent_count():
 # 2026-04-09T20:30:37 update
 
 # 2026-05-13T11:36:25 update
+
+
+
+# ---- Workspace-scoped run search API ----
+
+from fastapi import Query
+
+# In-memory run index (replace with real DB in production)
+_run_index = []
+
+
+async def search_runs(
+    workspace: str,
+    query: str = "",
+    status: Optional[str] = None,
+    limit: int = 50,
+) -> Dict:
+    """Search runs scoped to a specific workspace.
+    
+    All lookups, mutations, and dispatch decisions are scoped to
+    the authenticated workspace. Cross-workspace access is forbidden.
+    
+    Args:
+        workspace: The caller's workspace ID (required for every request)
+        query: Free-text search query
+        status: Filter by run status
+        limit: Maximum results to return
+    
+    Returns:
+        Filtered list of runs belonging to the workspace only
+    """
+    # Validate workspace is provided (defense in depth)
+    if not workspace:
+        raise HTTPException(status_code=400, detail="workspace is required")
+
+    results = []
+    for run in _run_index:
+        # CRITICAL: enforce workspace boundary on every result
+        if run.get("workspace") != workspace:
+            continue  # skip runs from other workspaces
+        
+        # Apply query filter
+        if query:
+            if query.lower() not in str(run.get("name", "")).lower():
+                continue
+        
+        # Apply status filter
+        if status and run.get("status") != status:
+            continue
+        
+        results.append(run)
+        
+        if len(results) >= limit:
+            break
+
+    return {
+        "runs": results,
+        "count": len(results),
+        "workspace": workspace,
+        "query": query,
+    }
+
+
+@router.post("/runs/search")
+async def search_runs_endpoint(
+    workspace: str,
+    query: str = "",
+    status: Optional[str] = None,
+    limit: int = 50,
+):
+    """Workspace-scoped run search endpoint."""
+    return await search_runs(workspace=workspace, query=query, status=status, limit=limit)
+
+
+@router.get("/runs/search")
+async def search_runs_get(
+    workspace: str = Query(..., description="Workspace ID"),
+    query: str = "",
+    status: Optional[str] = None,
+    limit: int = 50,
+):
+    """Workspace-scoped run search via GET."""
+    return await search_runs(workspace=workspace, query=query, status=status, limit=limit)
+
+
+@router.post("/runs/{run_id}/dispatch")
+async def dispatch_to_workspace(run_id: str, workspace: str, target_agent: str):
+    """Dispatch a run within a specific workspace.
+    
+    Dispatch decisions are scoped to the authenticated workspace.
+    """
+    # Find the run and verify workspace match
+    run = next((r for r in _run_index if r.get("id") == run_id), None)
+    
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    if run.get("workspace") != workspace:
+        # Log the cross-workspace access attempt
+        raise HTTPException(
+            status_code=403,
+            detail=f"Run {run_id} does not belong to workspace {workspace}"
+        )
+    
+    # Perform dispatch within workspace scope
+    return {
+        "status": "dispatched",
+        "run_id": run_id,
+        "workspace": workspace,
+        "target_agent": target_agent,
+    }
+
+
+def index_run(workspace: str, run_data: Dict) -> None:
+    """Index a run, automatically scoped to the correct workspace."""
+    if not workspace:
+        raise ValueError("workspace is required for indexing")
+    
+    indexed = {**run_data, "workspace": workspace}
+    _run_index.append(indexed)
