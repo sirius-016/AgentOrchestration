@@ -34,6 +34,11 @@ class AgentRuntime:
             process_env.update(env)
         process_env["AO_AGENT_ID"] = agent_id
 
+        # Check retry policy before starting
+        current_state = self._states.get(agent_id)
+        if not self._should_retry(agent_id, current_state or RuntimeState.STOPPED):
+            return False
+
         try:
             proc = subprocess.Popen(
                 command,
@@ -43,10 +48,15 @@ class AgentRuntime:
             )
             self._processes[agent_id] = proc
             self._states[agent_id] = RuntimeState.RUNNING
-            logger.info(f"Agent {agent_id} started (PID: {proc.pid})")
+            self._retry_counts[agent_id] = self._retry_counts.get(agent_id, 0) + 1
+            logger.info(
+                f"Agent {agent_id} started (PID: {proc.pid}), "
+                f"retry {self._retry_counts[agent_id]}/{self._max_retries}"
+            )
             return True
         except Exception as e:
             self._states[agent_id] = RuntimeState.CRASHED
+            self._retry_counts[agent_id] = self._retry_counts.get(agent_id, 0) + 1
             logger.error(f"Failed to start agent {agent_id}: {e}")
             return False
 
@@ -70,7 +80,13 @@ class AgentRuntime:
     def get_state(self, agent_id: str) -> RuntimeState:
         proc = self._processes.get(agent_id)
         if proc and proc.poll() is not None:
-            self._states[agent_id] = RuntimeState.CRASHED
+            # Process exited - check if it was successful (completed) or failed (crashed)
+            exit_code = proc.poll()
+            if exit_code == 0:
+                new_state = RuntimeState.COMPLETED
+            else:
+                new_state = RuntimeState.CRASHED
+            self._record_state_change(agent_id, new_state)
         return self._states.get(agent_id, RuntimeState.STOPPED)
 
     def is_running(self, agent_id: str) -> bool:
@@ -196,3 +212,14 @@ class AgentRuntime:
 # 2026-02-06T16:29:56 update
 
 # 2026-04-02T10:52:38 update
+
+
+    def get_retry_status(self, agent_id: str) -> Dict:
+        """Return retry status for an agent."""
+        return {
+            "agent_id": agent_id,
+            "retries": self._retry_counts.get(agent_id, 0),
+            "max_retries": self._max_retries,
+            "can_retry": self._should_retry(agent_id, self._states.get(agent_id, RuntimeState.STOPPED)),
+            "state": (self._states.get(agent_id) or RuntimeState.STOPPED).value,
+        }
