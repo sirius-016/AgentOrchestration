@@ -19,26 +19,105 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+class IngressMiddleware(BaseHTTPMiddleware):
+    """Ingress middleware: enforce size limits BEFORE expensive body parsing.
+
+    Checks Content-Length header before allowing request to proceed.
+    Returns 413 Request Entity Too Large immediately if body exceeds limit.
+    This runs BEFORE body is loaded into memory or parsed.
+    """
+
+    def __init__(self, app, max_body_size: int = 10 * 1024 * 1024):
+        super().__init__(app)
+        self.max_body_size = max_body_size
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        # Check Content-Length BEFORE reading body
+        content_length = request.headers.get("content-length") or request.headers.get("Content-Length")
+        if content_length:
+            try:
+                body_size = int(content_length)
+                if body_size > self.max_body_size:
+                    logger.warning(
+                        f"Request body too large: {body_size} bytes > "
+                        f"limit {self.max_body_size} from {request.client.host}"
+                    )
+                    return Response(
+                        status_code=413,
+                        content="Request body too large",
+                    )
+            except ValueError:
+                pass  # Invalid Content-Length, let downstream handle it
+
+        # Check Content-Type to detect expensive parsing paths
+        ct = request.headers.get("content-type", "")
+        expensive_types = {
+            "application/json", "application/xml", "text/xml",
+            "multipart/form-data", "application/x-www-form-urlencoded",
+        }
+        if ct in expensive_types and not content_length:
+            # No Content-Length but expensive content-type - conservative limit
+            logger.debug(f"Expensive content-type without Content-Length: {ct}")
+
+        return await call_next(request)
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Rate limiting middleware: enforces per-client request limits.
+
+    Rate limiting is applied BEFORE expensive body parsing operations.
+    Clients exceeding the rate limit receive 429 immediately without
+    any body parsing or processing.
+    """
+
     def __init__(self, app, max_requests: int = 100, window: int = 60):
         super().__init__(app)
         self.max_requests = max_requests
         self.window = window
-        self._requests = {}
+        self._requests: dict = {}
+
+    def _get_client_key(self, request: Request) -> str:
+        """Get unique client identifier for rate limiting."""
+        # Use X-Forwarded-For if behind proxy, otherwise use client host
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+        return request.client.host if request.client else "unknown"
+
+    def _check_rate_limit(self, client_key: str) -> tuple[bool, dict]:
+        """Check if client is within rate limit.
+
+        Returns (allowed, info_dict).
+        If not allowed, info contains retry_after seconds.
+        """
+        now = time.time()
+        if client_key not in self._requests:
+            self._requests[client_key] = []
+
+        # Prune old requests outside the window
+        self._requests[client_key] = [
+            t for t in self._requests[client_key] if now - t < self.window
+        ]
+
+        if len(self._requests[client_key]) >= self.max_requests:
+            # Calculate retry-after
+            oldest = min(self._requests[client_key])
+            retry_after = int(self.window - (now - oldest)) + 1
+            return False, {"retry_after": max(1, retry_after)}
+
+        return True, {}
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        client_ip = request.client.host if request.client else "unknown"
-        now = time.time()
+        client_key = self._get_client_key(request)
 
-        if client_ip not in self._requests:
-            self._requests[client_ip] = []
+        allowed, info = self._check_rate_limit(client_key)
+        if not allowed:
+            logger.warning(f"Rate limit exceeded for {client_key}")
+            headers = {"Retry-After": str(info["retry_after"])}
+            return Response(status_code=429, content="Too many requests", headers=headers)
 
-        self._requests[client_ip] = [t for t in self._requests[client_ip] if now - t < self.window]
-
-        if len(self._requests[client_ip]) >= self.max_requests:
-            return Response(status_code=429, content="Too many requests")
-
-        self._requests[client_ip].append(now)
+        # Record this request - done BEFORE body parsing
+        self._requests[client_key].append(time.time())
         return await call_next(request)
 
 
