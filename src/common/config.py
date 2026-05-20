@@ -21,7 +21,22 @@ class Config:
         for key, value in os.environ.items():
             if key.startswith(prefix):
                 config_key = key[len(prefix):].lower().replace("_", ".")
-                self._set_nested(config_key, value)
+                self._set_nested(config_key, self._coerce_value(value))
+
+    @staticmethod
+    def _coerce_value(value: str) -> Any:
+        """Coerce string environment variable values to appropriate types.
+
+        Handles boolean-looking values (true/false/yes/no/1/0) by converting
+        them to actual Python booleans. This prevents feature flags like
+        AO_FEATURE_ENABLED=false from being treated as truthy strings.
+        """
+        lower = value.lower().strip()
+        if lower in ("true", "yes", "1"):
+            return True
+        if lower in ("false", "no", "0"):
+            return False
+        return value
 
     def _set_nested(self, key: str, value: Any) -> None:
         parts = key.split(".")
