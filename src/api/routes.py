@@ -54,6 +54,35 @@ async def stop_agent(agent_id: str):
 async def agent_count():
     return {"count": registry.count()}
 
+
+
+@router.put("/agents/{agent_id}")
+async def update_agent(agent_id: str, updates: Dict, if_match: Optional[str] = None):
+    """Update agent with optimistic locking via ETag.
+    
+    Client must provide If-Match header with current ETag.
+    Returns 412 Precondition Failed if ETag doesn't match.
+    """
+    if if_match is None:
+        raise HTTPException(status_code=428, detail="If-Match header required for updates")
+    
+    success, new_etag = registry.update_with_etag(agent_id, updates, if_match)
+    if not success:
+        if registry.get(agent_id) is None:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        raise HTTPException(status_code=412, detail="ETag mismatch - resource was modified by another request")
+    
+    return {"status": "updated", "etag": new_etag}
+
+
+@router.get("/agents/{agent_id}/etag")
+async def get_agent_etag(agent_id: str):
+    """Get agent data with ETag for optimistic updates."""
+    agent, etag = registry.get_with_etag(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return {"agent": agent, "etag": etag}
+
 # 2019-03-18T11:10:18 update
 
 # 2019-04-22T13:58:05 update
