@@ -8,7 +8,15 @@ from pathlib import Path
 
 
 class ResourceLimits:
+    """Resource limits for sandboxed agent execution."""
+
     def __init__(self, cpu_time: int = 60, memory_mb: int = 512, disk_mb: int = 100):
+        if cpu_time <= 0:
+            raise ValueError("cpu_time must be a positive integer, got: " + str(cpu_time))
+        if memory_mb <= 0:
+            raise ValueError("memory_mb must be a positive integer, got: " + str(memory_mb))
+        if disk_mb <= 0:
+            raise ValueError("disk_mb must be a positive integer, got: " + str(disk_mb))
         self.cpu_time = cpu_time
         self.memory_mb = memory_mb
         self.disk_mb = disk_mb
