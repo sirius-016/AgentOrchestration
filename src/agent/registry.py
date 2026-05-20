@@ -22,7 +22,17 @@ class AgentRegistry:
         self._agents: Dict[str, Dict[str, Any]] = {}
         self._index: Dict[str, List[str]] = {}
 
+    def _validate_plugin_path(self, path: str) -> None:
+        """Prevent path traversal in artifact paths."""
+        import re
+        if '..' in path or path.startswith('/') or '\\' in path:
+            raise ValueError(f"Invalid plugin path: path traversal not allowed: {path}")
+
+
     def register(self, name: str, agent_type: str, config: Optional[Dict] = None) -> str:
+        # Validate name doesn't contain path traversal
+        if '..' in name or '/' in name or '\\' in name:
+            raise ValueError("Invalid handler name: path traversal not allowed")
         agent_id = str(uuid.uuid4())
         timestamp = time.time()
         self._agents[agent_id] = {
