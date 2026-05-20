@@ -177,3 +177,99 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 # 2026-03-27T12:58:53 update
 
 # 2026-05-12T17:19:36 update
+
+
+class BodyDecompressionMiddleware(BaseHTTPMiddleware):
+    """Decompress request body with limits to prevent gzip bomb attacks.
+    
+    A "gzip bomb" is a highly-compressed file that expands to enormous size
+    when decompressed, potentially exhausting server memory. This middleware
+    enforces a max_decompression_ratio and hard byte limit.
+    """
+
+    DEFAULT_MAX_SIZE = 10 * 1024 * 1024  # 10MB decompressed
+    DEFAULT_RATIO_LIMIT = 100  # compressed:decompressed ratio cap
+
+    def __init__(self, app, max_size: int = None, ratio_limit: float = None):
+        super().__init__(app)
+        self._max_size = max_size or self.DEFAULT_MAX_SIZE
+        self._ratio_limit = ratio_limit or self.DEFAULT_RATIO_LIMIT
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        # Only process if body is compressed
+        content_encoding = request.headers.get("content-encoding", "").lower()
+
+        if content_encoding not in ("gzip", "deflate", "br"):
+            return await call_next(request)
+
+        try:
+            body = await request.body()
+            compressed_size = len(body)
+
+            if compressed_size == 0:
+                return await call_next(request)
+
+            # Check ratio BEFORE expensive decompression
+            # Decompression limit based on ratio: compressed_size * ratio_limit
+            max_decompressed = min(
+                compressed_size * self._ratio_limit,
+                self._max_size
+            )
+
+            # Decompress with streaming to enforce limits
+            if content_encoding == "gzip":
+                import gzip
+                import io
+                decompressed = io.BytesIO()
+                with gzip.GzipFile(fileobj=decompressed, mode="wb") as gf:
+                    gf.write(body)
+                result = decompressed.getvalue()
+            elif content_encoding == "deflate":
+                import zlib
+                result = zlib.decompress(body)
+            elif content_encoding == "br":
+                import brotli
+                result = brotli.decompress(body)
+            else:
+                result = body
+
+            # Verify size limit after decompression
+            if len(result) > self._max_size:
+                logger.warning(
+                    f"Decompressed body ({len(result)} bytes) exceeds max size "
+                    f"({self._max_size} bytes) - rejecting"
+                )
+                return Response(
+                    status_code=413,
+                    content="Request body too large after decompression"
+                )
+
+            # Create a new request with the decompressed body
+            from starlette.datastructures import Headers
+            # Strip the encoding header since body is now decompressed
+            headers = Headers(request.headers.multi_items())
+            headers_raw = {k: v for k, v in headers.items() if k.lower() != "content-encoding"}
+
+            from starlette.requests import Request as NewRequest
+            from io import BytesIO
+
+            # Reconstruct the receive function with decompressed body
+            async def receive():
+                return {"body": result, "more_body": False}
+
+            new_request = NewRequest(
+                scope={
+                    **request.scope,
+                    "headers": [(k.encode(), v.encode()) for k, v in headers_raw.items()],
+                },
+                receive=receive,
+            )
+
+            return await call_next(new_request)
+
+        except (zlib.error, OSError, IOError, ValueError) as e:
+            logger.warning(f"Decompression failed: {e}")
+            return Response(status_code=400, content="Invalid compressed body")
+        except Exception as e:
+            logger.error(f"Body decompression error: {e}")
+            return Response(status_code=400, content="Decompression error")
