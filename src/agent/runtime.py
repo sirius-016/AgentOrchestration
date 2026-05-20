@@ -196,3 +196,11 @@ class AgentRuntime:
 # 2026-02-06T16:29:56 update
 
 # 2026-04-02T10:52:38 update
+
+def _validate_handler_name(handler_name: str) -> None:
+    """Validate handler name to prevent path traversal attacks."""
+    import re
+    if '..' in handler_name or '/' in handler_name or '\\' in handler_name:
+        raise ValueError(f"Invalid handler name: path traversal not allowed: {handler_name}")
+
+
