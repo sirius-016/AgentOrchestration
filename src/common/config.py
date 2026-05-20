@@ -13,8 +13,15 @@ class Config:
         self._load_env_overrides()
 
     def load(self, path: str) -> None:
-        with open(path) as f:
-            self._data = json.load(f)
+        try:
+            with open(path) as f:
+                self._data = json.load(f)
+        except json.JSONDecodeError as e:
+            raise json.JSONDecodeError(
+                f"Failed to parse config file {path}: {e.msg} at line {e.lineno}, column {e.colno}",
+                e.doc,
+                e.pos
+            )
 
     def _load_env_overrides(self) -> None:
         prefix = "AO_"
