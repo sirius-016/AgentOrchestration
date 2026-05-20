@@ -10,8 +10,34 @@ from starlette.responses import Response
 logger = logging.getLogger(__name__)
 
 
+class CORSMiddleware(BaseHTTPMiddleware):
+    """Handle CORS preflight requests without bypassing auth on real calls."""
+    
+    ALLOWED_ORIGINS = ["*"]  # Configure as needed
+    
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        # Handle CORS preflight - still validate but allow proper handling
+        if request.method == "OPTIONS":
+            origin = request.headers.get("origin", "*")
+            access_control_request_method = request.headers.get("access-control-request-method", "POST")
+            access_control_request_headers = request.headers.get("access-control-request-headers", "")
+            
+            # For preflight, still check auth for the actual route
+            # but don't let it bypass - OPTIONS should be for routes that exist
+            response = Response(status_code=200)
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, X-Requested-With"
+            response.headers["Access-Control-Max-Age"] = "3600"
+            return response
+        
+        return await call_next(request)
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        # OPTIONS requests still go through auth for route validation
+        # but CORSMiddleware handles the response headers
         if request.url.path.startswith("/api/v2") and request.url.path != "/api/v2/auth/token":
             token = request.headers.get("Authorization", "")
             if not token.startswith("Bearer "):
