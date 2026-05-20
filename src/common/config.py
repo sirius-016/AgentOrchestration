@@ -24,11 +24,23 @@ class Config:
                 self._set_nested(config_key, value)
 
     def _set_nested(self, key: str, value: Any) -> None:
+        """Set a nested config key, rejecting branch replacement by scalars.
+
+        Raises:
+            ValueError: If any intermediate path component is a scalar (non-dict),
+                        which would be replaced by setting a nested key.
+        """
         parts = key.split(".")
         current = self._data
         for part in parts[:-1]:
             if part not in current:
                 current[part] = {}
+            elif not isinstance(current[part], dict):
+                raise ValueError(
+                    f"Cannot set nested key '{key}': "
+                    f"path component '{part}' is a scalar value, not a branch. "
+                    f"Scalar values cannot be replaced by nested keys."
+                )
             current = current[part]
         current[parts[-1]] = value
 
