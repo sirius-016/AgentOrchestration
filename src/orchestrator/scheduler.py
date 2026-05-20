@@ -31,11 +31,13 @@ class PriorityQueue:
 
 
 class TaskScheduler:
-    def __init__(self):
+    def __init__(self, max_capacity: int = 1000):
         self._queues: Dict[str, PriorityQueue] = {}
         self._scheduled: Dict[str, float] = {}
         self._in_flight: Dict[str, Dict] = {}
         self._max_retries = 3
+        self._max_capacity = max_capacity
+        self._used_capacity: Dict[str, int] = {}
 
     def enqueue(self, task: Dict, queue: str = "default", priority: int = 0) -> str:
         task_id = str(uuid4())
@@ -45,7 +47,14 @@ class TaskScheduler:
 
         if queue not in self._queues:
             self._queues[queue] = PriorityQueue()
+        
+        # Check capacity before enqueueing
+        used = self._used_capacity.get(queue, 0)
+        if used >= self._max_capacity:
+            raise RuntimeError(f"Queue '{queue}' at capacity limit ({self._max_capacity}), cannot enqueue")
+        
         self._queues[queue].push(task, priority)
+        self._used_capacity[queue] = used + 1
         return task_id
 
     def schedule(self, task: Dict, delay: float, queue: str = "default", priority: int = 0) -> str:
@@ -72,6 +81,30 @@ class TaskScheduler:
     def complete(self, task_id: str) -> bool:
         return self._in_flight.pop(task_id, None) is not None
 
+
+
+    def rollback_enqueue(self, task_id: str, queue: str = "default") -> None:
+        """Release capacity when enqueue fails (transaction rollback).
+        
+        Call this when a task fails to process after being enqueued
+        so the capacity slot is freed for future tasks.
+        """
+        if queue in self._used_capacity and self._used_capacity[queue] > 0:
+            self._used_capacity[queue] -= 1
+
+    def release_capacity(self, queue: str = "default") -> int:
+        """Release all capacity for a queue. Returns number of slots freed."""
+        freed = self._used_capacity.get(queue, 0)
+        self._used_capacity[queue] = 0
+        return freed
+
+    def get_capacity(self, queue: str = "default") -> Dict:
+        """Return capacity info for a queue."""
+        return {
+            "used": self._used_capacity.get(queue, 0),
+            "max": self._max_capacity,
+            "available": self._max_capacity - self._used_capacity.get(queue, 0),
+        }
     def fail(self, task_id: str, queue: str = "default") -> bool:
         task = self._in_flight.pop(task_id, None)
         if task:
@@ -79,6 +112,9 @@ class TaskScheduler:
             if task["retries"] < self._max_retries:
                 self.enqueue(task, queue, priority=task.get("priority", 0))
                 return True
+            else:
+                # Permanent failure: release capacity
+                self.rollback_enqueue(task_id, queue)
         return False
 
 # 2019-04-25T08:37:12 update
