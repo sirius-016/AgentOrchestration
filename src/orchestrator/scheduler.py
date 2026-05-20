@@ -37,6 +37,56 @@ class TaskScheduler:
         self._in_flight: Dict[str, Dict] = {}
         self._max_retries = 3
 
+    def _check_blackout(self, task: Dict) -> None:
+        """Atomically check blackout windows before dispatch.
+
+        Raises:
+            DispatchError: If any blackout window is active.
+        """
+        now = time.time()
+        active_windows = [w for w in self._blackout_windows if w.is_active(now)]
+        if active_windows:
+            self._blackout_audit.append({
+                "timestamp": now,
+                "task_id": task.get("id", "unknown"),
+                "blocked_by": [w.name for w in active_windows],
+                "action": "blocked",
+            })
+            raise DispatchError(
+                f"Dispatch blocked by active blackout window(s): "
+                + ", ".join(w.name for w in active_windows)
+            )
+
+    def add_blackout_window(self, window: BlackoutWindow) -> None:
+        """Add a blackout window to the scheduler policy."""
+        self._blackout_windows.append(window)
+        logger.info(f"Added blackout window: {window}")
+
+    def remove_blackout_window(self, name: str) -> bool:
+        """Remove a blackout window by name. Returns True if found."""
+        for i, w in enumerate(self._blackout_windows):
+            if w.name == name:
+                del self._blackout_windows[i]
+                logger.info(f"Removed blackout window: {name}")
+                return True
+        return False
+
+    def get_active_blackout_windows(self) -> List[BlackoutWindow]:
+        """Return list of currently active blackout windows."""
+        now = time.time()
+        return [w for w in self._blackout_windows if w.is_active(now)]
+
+    def is_dispatch_allowed(self, task: Optional[Dict] = None) -> bool:
+        """Check if dispatch is currently allowed (no active blackout windows)."""
+        active = self.get_active_blackout_windows()
+        if task:
+            task["_blackout_check"] = {
+                "allowed": len(active) == 0,
+                "active_windows": [w.name for w in active],
+                "checked_at": time.time(),
+            }
+        return len(active) == 0
+
     def enqueue(self, task: Dict, queue: str = "default", priority: int = 0) -> str:
         task_id = str(uuid4())
         task["id"] = task_id
@@ -65,7 +115,11 @@ class TaskScheduler:
         if queue in self._queues and len(self._queues[queue]) > 0:
             task = self._queues[queue].pop()
             if task:
+                # Enforce blackout policy before committing to in_flight
+                self._check_blackout(task)
                 self._in_flight[task["id"]] = task
+                task["_dispatched_at"] = time.time()
+                logger.debug(f"Dispatched task {task['id']} from queue {queue}")
                 return task
         return None
 
