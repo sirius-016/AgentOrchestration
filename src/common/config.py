@@ -18,10 +18,23 @@ class Config:
 
     def _load_env_overrides(self) -> None:
         prefix = "AO_"
+        seen_keys: dict[str, str] = {}  # normalized_key -> original_env_var
+        
         for key, value in os.environ.items():
             if key.startswith(prefix):
-                config_key = key[len(prefix):].lower().replace("_", ".")
-                self._set_nested(config_key, value)
+                normalized_key = key[len(prefix):].lower().replace("_", ".")
+                
+                # Detect case-colliding environment overrides
+                if normalized_key in seen_keys:
+                    original_env = seen_keys[normalized_key]
+                    raise ValueError(
+                        f"Case-colliding environment variables detected: "
+                        f"'{original_env}' and '{key}' both map to config key '{normalized_key}'. "
+                        f"Please use consistent casing for environment variable names."
+                    )
+                
+                seen_keys[normalized_key] = key
+                self._set_nested(normalized_key, value)
 
     def _set_nested(self, key: str, value: Any) -> None:
         parts = key.split(".")
