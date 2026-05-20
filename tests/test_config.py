@@ -135,3 +135,49 @@ class TestConfig:
 # 2026-02-11T19:28:37 update
 
 # 2026-04-17T10:00:53 update
+
+
+    # --- Tests for #137: boolean environment variable coercion ---
+
+    def test_env_boolean_true(self, monkeypatch):
+        """AO_ env vars with 'true' value should become Python True."""
+        monkeypatch.setenv("AO_FEATURE_ENABLED", "true")
+        config = Config()
+        assert config.get("feature.enabled") is True
+
+    def test_env_boolean_false(self, monkeypatch):
+        """AO_ env vars with 'false' value should become Python False."""
+        monkeypatch.setenv("AO_FEATURE_ENABLED", "false")
+        config = Config()
+        assert config.get("feature.enabled") is False
+
+    def test_env_boolean_yes_no(self, monkeypatch):
+        monkeypatch.setenv("AO_DEBUG_MODE", "yes")
+        monkeypatch.setenv("AO_VERBOSE_LOGGING", "no")
+        config = Config()
+        assert config.get("debug.mode") is True
+        assert config.get("verbose.logging") is False
+
+    def test_env_boolean_1_0(self, monkeypatch):
+        monkeypatch.setenv("AO_SSL_ENABLED", "1")
+        monkeypatch.setenv("AO_CACHE_ENABLED", "0")
+        config = Config()
+        assert config.get("ssl.enabled") is True
+        assert config.get("cache.enabled") is False
+
+    def test_env_non_boolean_string_preserved(self, monkeypatch):
+        monkeypatch.setenv("AO_DATABASE_HOST", "localhost")
+        config = Config()
+        assert config.get("database.host") == "localhost"
+
+    def test_env_boolean_case_insensitive(self, monkeypatch):
+        monkeypatch.setenv("AO_FEATURE_A", "True")
+        monkeypatch.setenv("AO_FEATURE_B", "FALSE")
+        config = Config()
+        assert config.get("feature.a") is True
+        assert config.get("feature.b") is False
+
+    def test_env_boolean_whitespace_stripped(self, monkeypatch):
+        monkeypatch.setenv("AO_FEATURE_ENABLED", "  true  ")
+        config = Config()
+        assert config.get("feature.enabled") is True
