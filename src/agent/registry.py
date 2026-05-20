@@ -17,10 +17,11 @@ class AgentStatus(Enum):
 
 
 class AgentRegistry:
-    def __init__(self, storage_backend: str = "memory"):
-        self.storage_backend = storage_backend
-        self._agents: Dict[str, Dict[str, Any]] = {}
-        self._index: Dict[str, List[str]] = {}
+    """Agent Registry with handler pinning for mid-run stability."""
+    
+
+        self._handler_pins: Dict[str, str] = {}  # agent_id -> pinned_handler_id
+
 
     def register(self, name: str, agent_type: str, config: Optional[Dict] = None) -> str:
         agent_id = str(uuid.uuid4())
@@ -69,6 +70,29 @@ class AgentRegistry:
         if group in self._index and agent_id in self._index[group]:
             self._index[group].remove(agent_id)
         return True
+
+    def pin_handler(self, agent_id: str, handler_id: str) -> bool:
+        """Pin a handler to an agent for the duration of a run attempt.
+        
+        This prevents mid-run handler changes that could cause inconsistent behavior.
+        """
+        if agent_id not in self._agents:
+            return False
+        
+        self._handler_pins[agent_id] = handler_id
+        return True
+    
+    def get_pinned_handler(self, agent_id: str) -> Optional[str]:
+        """Get the pinned handler for an agent, if any."""
+        return self._handler_pins.get(agent_id)
+    
+    def unpin_handler(self, agent_id: str) -> bool:
+        """Remove handler pin after run attempt completes."""
+        if agent_id in self._handler_pins:
+            del self._handler_pins[agent_id]
+            return True
+        return False
+
 
     def count(self) -> int:
         return len(self._agents)
