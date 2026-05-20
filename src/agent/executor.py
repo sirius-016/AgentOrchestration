@@ -46,6 +46,20 @@ class AgentExecutor:
         return self._results.get(execution_id)
 
     def cancel(self, execution_id: str) -> bool:
+        """Cancel an active execution.
+        
+        Stores a cancelled result so polling clients don't wait forever.
+        """
+        if execution_id not in self._executions:
+            return False
+        
+        self._executions[execution_id]["status"] = "cancelled"
+        self._executions[execution_id]["result"] = ExecutionResult.CANCELLED.value
+        self._executions[execution_id]["updated_at"] = time.time()
+        return True
+
+
+    def cancel(self, execution_id: str) -> bool:
         task = self._active_tasks.get(execution_id)
         if task and not task.done():
             task.cancel()
