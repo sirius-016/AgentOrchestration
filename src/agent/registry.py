@@ -34,6 +34,7 @@ class AgentRegistry:
             "created_at": timestamp,
             "updated_at": timestamp,
             "version": "1.0.0",
+            "etag": str(uuid.uuid4()),
             "metrics": {"tasks_completed": 0, "errors": 0, "uptime": 0},
         }
         group = agent_type.split(".")[0]
@@ -69,6 +70,39 @@ class AgentRegistry:
         if group in self._index and agent_id in self._index[group]:
             self._index[group].remove(agent_id)
         return True
+
+    def update_with_etag(self, agent_id: str, updates: Dict[str, Any], expected_etag: str) -> tuple[bool, Optional[str]]:
+        """Update agent with optimistic locking using ETag.
+        
+        Returns (success, new_etag) tuple.
+        Fails if current ETag doesn't match expected_etag.
+        """
+        if agent_id not in self._agents:
+            return False, None
+        
+        current = self._agents[agent_id]
+        if current.get("etag") != expected_etag:
+            # Stale update attempt - reject
+            return False, current.get("etag")
+        
+        # Generate new ETag for this version
+        new_etag = str(uuid.uuid4())
+        updates["etag"] = new_etag
+        updates["updated_at"] = time.time()
+        current.update(updates)
+        
+        return True, new_etag
+    
+    def get_with_etag(self, agent_id: str) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Get agent data with current ETag for optimistic updates.
+        
+        Returns (agent_data, etag) tuple.
+        """
+        agent = self._agents.get(agent_id)
+        if not agent:
+            return None, None
+        return agent.copy(), agent.get("etag")
+
 
     def count(self) -> int:
         return len(self._agents)
