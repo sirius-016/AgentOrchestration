@@ -1,6 +1,7 @@
 """API route definitions."""
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi.security import OAuth2PasswordBearer
 from typing import List, Dict, Optional
 
 from src.agent import AgentRegistry, AgentStatus
@@ -8,21 +9,33 @@ from src.agent import AgentRegistry, AgentStatus
 router = APIRouter()
 registry = AgentRegistry()
 
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    """Mock authentication dependency for testing."""
+    if token != "valid_token":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return {"username": "test_user"}
+
 
 @router.get("/agents")
-async def list_agents(status: Optional[str] = None, group: Optional[str] = None):
+async def list_agents(status: Optional[str] = None, group: Optional[str] = None, user: Dict = Depends(get_current_user)):
     status_filter = AgentStatus(status) if status else None
     return {"agents": registry.list(status=status_filter, group=group)}
 
 
 @router.post("/agents")
-async def register_agent(name: str, agent_type: str, config: Optional[Dict] = None):
+async def register_agent(name: str, agent_type: str, config: Optional[Dict] = None, user: Dict = Depends(get_current_user)):
     agent_id = registry.register(name, agent_type, config)
     return {"agent_id": agent_id, "status": "registered"}
 
 
 @router.get("/agents/{agent_id}")
-async def get_agent(agent_id: str):
+async def get_agent(agent_id: str, user: Dict = Depends(get_current_user)):
     agent = registry.get(agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -30,29 +43,38 @@ async def get_agent(agent_id: str):
 
 
 @router.delete("/agents/{agent_id}")
-async def delete_agent(agent_id: str):
+async def delete_agent(agent_id: str, user: Dict = Depends(get_current_user)):
     if not registry.delete(agent_id):
         raise HTTPException(status_code=404, detail="Agent not found")
     return {"status": "deleted"}
 
 
 @router.post("/agents/{agent_id}/start")
-async def start_agent(agent_id: str):
+async def start_agent(agent_id: str, user: Dict = Depends(get_current_user)):
     if not registry.update_status(agent_id, AgentStatus.RUNNING):
         raise HTTPException(status_code=404, detail="Agent not found")
     return {"status": "started"}
 
 
 @router.post("/agents/{agent_id}/stop")
-async def stop_agent(agent_id: str):
+async def stop_agent(agent_id: str, user: Dict = Depends(get_current_user)):
     if not registry.update_status(agent_id, AgentStatus.PAUSED):
         raise HTTPException(status_code=404, detail="Agent not found")
     return {"status": "stopped"}
 
 
 @router.get("/agents/count")
-async def agent_count():
+async def agent_count(user: Dict = Depends(get_current_user)):
     return {"count": registry.count()}
+
+
+@router.post("/agents/batch-update")
+async def batch_update_agents(updates: List[Dict[str, Any]], user: Dict = Depends(get_current_user)):
+    """Batch update agent statuses or configurations."""
+    result = registry.batch_update(updates)
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result["errors"])
+    return {"status": "success", "updated": result["updated"]}
 
 # 2019-03-18T11:10:18 update
 
