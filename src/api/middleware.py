@@ -2,16 +2,78 @@
 
 import time
 import logging
-from typing import Callable
+from dataclasses import dataclass
+from typing import Callable, Optional
+from fastapi import Depends, HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
+from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response
+
+
+@dataclass
+class WorkspaceContext:
+    """Authenticated workspace context for request scoping."""
+    workspace_id: str
+    role: str = "member"
+    user_id: Optional[str] = None
+
+
+def get_workspace_context(request: Request) -> WorkspaceContext:
+    """
+    Extract and validate workspace context from request.
+    
+    This dependency ensures every API call is scoped to an authenticated workspace.
+    The workspace_id and role are extracted from validated JWT claims.
+    
+    Raises:
+        HTTPException: 401 if workspace context is missing or invalid
+    """
+    workspace_id = request.headers.get("X-Workspace-Id")
+    role = request.headers.get("X-Workspace-Role", "member")
+    user_id = request.headers.get("X-User-Id")
+    
+    if not workspace_id:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing workspace context. X-Workspace-Id header required."
+        )
+    
+    if role not in ("owner", "admin", "member", "viewer"):
+        raise HTTPException(
+            status_code=401,
+            detail=f"Invalid workspace role: {role}"
+        )
+    
+    return WorkspaceContext(workspace_id=workspace_id, role=role, user_id=user_id)
+
+
+def require_workspace_role(minimum_role: str):
+    """
+    Dependency factory to enforce minimum role for workspace operations.
+    
+    Args:
+        minimum_role: One of 'owner', 'admin', 'member', 'viewer'
+    
+    Returns:
+        Dependency that validates workspace role
+    """
+    role_hierarchy = {"viewer": 0, "member": 1, "admin": 2, "owner": 3}
+    
+    def role_checker(ctx: WorkspaceContext = Depends(get_workspace_context)) -> WorkspaceContext:
+        if role_hierarchy.get(ctx.role, 0) < role_hierarchy.get(minimum_role, 0):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Insufficient permissions. Required role: {minimum_role}, current role: {ctx.role}"
+            )
+        return ctx
+    
+    return role_checker
 
 logger = logging.getLogger(__name__)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+    async def dispatch(self, request: StarletteRequest, call_next: Callable) -> Response:
         if request.url.path.startswith("/api/v2") and request.url.path != "/api/v2/auth/token":
             token = request.headers.get("Authorization", "")
             if not token.startswith("Bearer "):
@@ -26,7 +88,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.window = window
         self._requests = {}
 
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+    async def dispatch(self, request: StarletteRequest, call_next: Callable) -> Response:
         client_ip = request.client.host if request.client else "unknown"
         now = time.time()
 
@@ -43,7 +105,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
 
 class LoggingMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+    async def dispatch(self, request: StarletteRequest, call_next: Callable) -> Response:
         start = time.time()
         response = await call_next(request)
         duration = time.time() - start

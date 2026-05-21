@@ -41,6 +41,17 @@ class ResourceExhaustedError(AgentOrchestratorError):
     def __init__(self, resource: str):
         super().__init__(f"Resource exhausted: {resource}")
 
+
+class WorkspaceScopeError(AgentOrchestratorError):
+    """Raised when an operation violates workspace scope."""
+    def __init__(self, resource_type: str, resource_id: str, workspace_id: str):
+        super().__init__(
+            f"Workspace scope violation: {resource_type} '{resource_id}' not accessible in workspace '{workspace_id}'"
+        )
+        self.resource_type = resource_type
+        self.resource_id = resource_id
+        self.workspace_id = workspace_id
+
 # 2019-01-25T13:21:06 update
 
 # 2019-02-15T19:31:32 update

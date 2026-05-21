@@ -21,8 +21,12 @@ class AgentRegistry:
         self.storage_backend = storage_backend
         self._agents: Dict[str, Dict[str, Any]] = {}
         self._index: Dict[str, List[str]] = {}
+        # Workspace-scoped index: workspace_id -> set of agent_ids
+        self._workspace_index: Dict[str, set] = {}
+        # Run search index: workspace_id -> {query_key -> [agent_ids]}
+        self._run_search_index: Dict[str, Dict[str, List[str]]] = {}
 
-    def register(self, name: str, agent_type: str, config: Optional[Dict] = None) -> str:
+    def register(self, name: str, agent_type: str, config: Optional[Dict] = None, workspace_id: Optional[str] = None) -> str:
         agent_id = str(uuid.uuid4())
         timestamp = time.time()
         self._agents[agent_id] = {
@@ -31,6 +35,7 @@ class AgentRegistry:
             "type": agent_type,
             "status": AgentStatus.PENDING.value,
             "config": config or {},
+            "workspace_id": workspace_id,
             "created_at": timestamp,
             "updated_at": timestamp,
             "version": "1.0.0",
@@ -40,13 +45,29 @@ class AgentRegistry:
         if group not in self._index:
             self._index[group] = []
         self._index[group].append(agent_id)
+        # Index by workspace
+        if workspace_id:
+            if workspace_id not in self._workspace_index:
+                self._workspace_index[workspace_id] = set()
+            self._workspace_index[workspace_id].add(agent_id)
         return agent_id
 
-    def get(self, agent_id: str) -> Optional[Dict[str, Any]]:
-        return self._agents.get(agent_id)
+    def get(self, agent_id: str, workspace_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        agent = self._agents.get(agent_id)
+        if agent is None:
+            return None
+        # Validate workspace scope if provided
+        if workspace_id is not None and agent.get("workspace_id") != workspace_id:
+            return None
+        return agent
 
-    def list(self, status: Optional[AgentStatus] = None, group: Optional[str] = None) -> List[Dict[str, Any]]:
-        agents = self._agents.values()
+    def list(self, status: Optional[AgentStatus] = None, group: Optional[str] = None, workspace_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        # Scope to workspace first if provided
+        if workspace_id:
+            workspace_agent_ids = self._workspace_index.get(workspace_id, set())
+            agents = [self._agents[aid] for aid in workspace_agent_ids if aid in self._agents]
+        else:
+            agents = list(self._agents.values())
         if status:
             agents = [a for a in agents if a["status"] == status.value]
         if group:
@@ -54,24 +75,68 @@ class AgentRegistry:
             agents = [a for a in agents if a["id"] in agent_ids]
         return list(agents)
 
-    def update_status(self, agent_id: str, status: AgentStatus) -> bool:
+    def update_status(self, agent_id: str, status: AgentStatus, workspace_id: Optional[str] = None) -> bool:
         if agent_id not in self._agents:
+            return False
+        # Validate workspace scope if provided
+        if workspace_id is not None and self._agents[agent_id].get("workspace_id") != workspace_id:
             return False
         self._agents[agent_id]["status"] = status.value
         self._agents[agent_id]["updated_at"] = time.time()
         return True
 
-    def delete(self, agent_id: str) -> bool:
+    def delete(self, agent_id: str, workspace_id: Optional[str] = None) -> bool:
         if agent_id not in self._agents:
             return False
-        agent = self._agents.pop(agent_id)
+        agent = self._agents[agent_id]
+        # Validate workspace scope if provided
+        if workspace_id is not None and agent.get("workspace_id") != workspace_id:
+            return False
+        del self._agents[agent_id]
         group = agent["type"].split(".")[0]
         if group in self._index and agent_id in self._index[group]:
             self._index[group].remove(agent_id)
+        # Remove from workspace index
+        ws_id = agent.get("workspace_id")
+        if ws_id and ws_id in self._workspace_index:
+            self._workspace_index[ws_id].discard(agent_id)
         return True
 
-    def count(self) -> int:
+    def count(self, workspace_id: Optional[str] = None) -> int:
+        if workspace_id:
+            return len(self._workspace_index.get(workspace_id, set()))
         return len(self._agents)
+
+    def search_runs(self, workspace_id: str, query: Optional[str] = None, status: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        Search for runs within a workspace scope.
+        
+        All queries are scoped to the authenticated workspace.
+        This prevents cross-workspace data leakage.
+        
+        Args:
+            workspace_id: The workspace to search within (mandatory)
+            query: Optional text search on agent name/type
+            status: Optional status filter
+            limit: Maximum results to return
+        
+        Returns:
+            List of matching agents scoped to workspace
+        """
+        workspace_agent_ids = self._workspace_index.get(workspace_id, set())
+        agents = [self._agents[aid] for aid in workspace_agent_ids if aid in self._agents]
+        
+        if status:
+            agents = [a for a in agents if a["status"] == status]
+        if query:
+            query_lower = query.lower()
+            agents = [
+                a for a in agents
+                if query_lower in a.get("name", "").lower()
+                or query_lower in a.get("type", "").lower()
+            ]
+        
+        return agents[:limit]
 
 # 2019-01-29T11:24:49 update
 
