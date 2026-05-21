@@ -1,7 +1,7 @@
 """Workflow Manager — Defines and executes multi-step agent workflows."""
 
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 from uuid import uuid4
 
 
@@ -11,15 +11,19 @@ class StepStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
+    ROLLBACK = "rollback"  # Added for compensation tracking
 
 
 class WorkflowStep:
-    def __init__(self, name: str, handler: Callable, retries: int = 0, timeout: int = 300):
+    def __init__(self, name: str, handler: Callable, retries: int = 0, timeout: int = 300, 
+                 depends_on: Optional[List[str]] = None, compensate: Optional[Callable] = None):
         self.id = str(uuid4())
         self.name = name
         self.handler = handler
         self.retries = retries
         self.timeout = timeout
+        self.depends_on: List[str] = depends_on or []
+        self.compensate: Optional[Callable] = compensate  # Compensation handler for rollback
         self.status = StepStatus.PENDING
         self.result: Any = None
         self.error: Optional[str] = None
@@ -33,6 +37,8 @@ class Workflow:
         self.steps: List[WorkflowStep] = []
         self._step_map: Dict[str, WorkflowStep] = {}
         self.status = StepStatus.PENDING
+        self.in_rollback = False  # Track if we're in compensation mode
+        self.rollback_from_step: Optional[str] = None  # Step ID that triggered rollback
 
     def add_step(self, step: WorkflowStep) -> "Workflow":
         self.steps.append(step)
@@ -41,6 +47,68 @@ class Workflow:
 
     def get_step(self, step_id: str) -> Optional[WorkflowStep]:
         return self._step_map.get(step_id)
+    
+    def get_step_by_name(self, name: str) -> Optional[WorkflowStep]:
+        for step in self.steps:
+            if step.name == name:
+                return step
+        return None
+    
+    def validate_graph(self) -> tuple[bool, str]:
+        """Validate workflow graph for circular dependencies."""
+        # Build dependency graph
+        dep_graph: Dict[str, Set[str]] = {}
+        step_ids: Set[str] = set()
+        
+        for step in self.steps:
+            step_ids.add(step.id)
+            dep_graph[step.id] = set(step.depends_on)
+        
+        # Validate all dependency reference valid step IDs
+        for step_id, deps in dep_graph.items():
+            for dep_id in deps:
+                if dep_id not in step_ids:
+                    step = self._step_map.get(step_id)
+                    step_name = step.name if step else step_id
+                    return False, f"Step '{step_name}' depends on non-existent step ID '{dep_id}'"
+        
+        # Check for circular dependencies using DFS
+        visited: Set[str] = set()
+        rec_stack: Set[str] = set()
+        
+        def has_cycle(node: str) -> bool:
+            visited.add(node)
+            rec_stack.add(node)
+            
+            for neighbor in dep_graph.get(node, []):
+                if neighbor not in visited:
+                    if has_cycle(neighbor):
+                        return True
+                elif neighbor in rec_stack:
+                    return True
+            
+            rec_stack.remove(node)
+            return False
+        
+        for step_id in step_ids:
+            if step_id not in visited:
+                if has_cycle(step_id):
+                    return False, "Circular dependency detected in workflow graph"
+        
+        return True, ""
+    
+    def mark_remaining_for_rollback(self, failed_step_id: str):
+        """Mark all remaining steps as ROLLBACK (blocked after compensation failure)."""
+        self.in_rollback = True
+        self.rollback_from_step = failed_step_id
+        
+        found_failed = False
+        for step in self.steps:
+            if step.id == failed_step_id:
+                found_failed = True
+            elif found_failed:
+                # Block downstream steps
+                step.status = StepStatus.ROLLBACK
 
 
 class WorkflowManager:
@@ -66,8 +134,18 @@ class WorkflowManager:
         if not workflow:
             return False
 
+        # Validate workflow graph before execution
+        valid, error_msg = workflow.validate_graph()
+        if not valid:
+            raise ValueError(f"Invalid workflow graph: {error_msg}")
+
         workflow.status = StepStatus.RUNNING
         for step in workflow.steps:
+            # Block if we're in rollback (compensation) mode
+            if workflow.in_rollback:
+                step.status = StepStatus.ROLLBACK
+                continue
+                
             step.status = StepStatus.RUNNING
             try:
                 result = step.handler()
@@ -77,10 +155,37 @@ class WorkflowManager:
                 step.error = str(e)
                 step.status = StepStatus.FAILED
                 workflow.status = StepStatus.FAILED
+                # Mark remaining steps as blocked for rollback
+                workflow.mark_remaining_for_rollback(step.id)
                 return False
 
         workflow.status = StepStatus.COMPLETED
         return True
+    
+    def rollback_workflow(self, workflow_id: str) -> bool:
+        """Execute compensation/rollback for a workflow."""
+        workflow = self._workflows.get(workflow_id)
+        if not workflow:
+            return False
+        
+        if not workflow.in_rollback:
+            return False
+        
+        # Execute compensation handlers for completed steps in reverse order
+        completed_steps = [s for s in workflow.steps if s.status == StepStatus.COMPLETED]
+        
+        for step in reversed(completed_steps):
+            if hasattr(step, 'compensate') and step.compensate:
+                try:
+                    step.status = StepStatus.ROLLBACK
+                    step.compensate()
+                except Exception as e:
+                    step.error = f"Compensation failed: {str(e)}"
+                    # Stop further compensation
+                    break
+        
+        return True
+
 
 # 2019-03-27T19:58:07 update
 
