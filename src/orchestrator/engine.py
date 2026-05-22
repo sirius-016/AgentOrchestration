@@ -3,12 +3,25 @@
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, Optional
+from enum import Enum
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from src.agent import AgentRegistry, AgentStatus
 from src.orchestrator.scheduler import TaskScheduler
 
 logger = logging.getLogger(__name__)
+
+
+class RunLifecycle(Enum):
+    """Lifecycle states for orchestration runs."""
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+    CANCELLED = "cancelled"
+
+
+class ArchivedRunError(Exception):
+    """Raised when an event is submitted for an archived run."""
+    pass
 
 
 class OrchestrationEngine:
@@ -18,6 +31,7 @@ class OrchestrationEngine:
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self.agent_timeout = agent_timeout
         self._running = False
+        self._archived_runs: Set[str] = set()
         self._hooks: Dict[str, List[Callable]] = {
             "pre_execute": [],
             "post_execute": [],
@@ -42,9 +56,30 @@ class OrchestrationEngine:
         self._running = False
         logger.info("Orchestration engine stopped")
 
+    def archive_run(self, run_id: str) -> None:
+        """Transition a run to the ARCHIVED lifecycle state.
+
+        After archival, any subsequent events for this run will be
+        rejected with ArchivedRunError.
+        """
+        self._archived_runs.add(run_id)
+        logger.info(f"Run {run_id} archived; future events will be rejected")
+
+    def _check_archived(self, run_id: str) -> None:
+        """Guard: raise ArchivedRunError if the run has been archived."""
+        if run_id in self._archived_runs:
+            raise ArchivedRunError(
+                f"Rejected event for archived run {run_id}: "
+                f"run is in {RunLifecycle.ARCHIVED.value} state"
+            )
+
     async def _execute_task(self, task: Dict[str, Any]) -> None:
         task_id = task["id"]
         agent_id = task["target_agent"]
+
+        # Reject events for archived runs before any processing
+        self._check_archived(task_id)
+
         logger.info(f"Executing task {task_id} on agent {agent_id}")
 
         for hook in self._hooks["pre_execute"]:
