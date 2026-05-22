@@ -1,9 +1,42 @@
 """Custom exception definitions."""
 
+from typing import Dict, Type
+
 
 class AgentOrchestratorError(Exception):
     """Base exception for all platform errors."""
     pass
+
+
+class ValidationError(AgentOrchestratorError):
+    """Exception raised for validation failures."""
+    def __init__(self, message: str, field: str = None):
+        self.field = field
+        super().__init__(message)
+
+
+# Mapping of exception types to HTTP status codes
+# This ensures consistent error responses across the API
+ERROR_CODE_MAP: Dict[Type[Exception], int] = {
+    # Validation errors - 400 Bad Request
+    ValidationError: 400,
+    ConfigurationError: 400,
+    
+    # Authentication errors - 401 Unauthorized
+    AuthenticationError: 401,
+    
+    # Not found errors - 404 Not Found
+    AgentNotFoundError: 404,
+    
+    # Rate limit errors - 429 Too Many Requests
+    RateLimitError: 429,
+    
+    # Server errors - 500 Internal Server Error
+    AgentOrchestratorError: 500,
+    AgentTimeoutError: 500,
+    TaskExecutionError: 500,
+    ResourceExhaustedError: 500,
+}
 
 
 class AgentNotFoundError(AgentOrchestratorError):

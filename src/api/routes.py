@@ -4,9 +4,11 @@ from fastapi import APIRouter, HTTPException, Depends
 from typing import List, Dict, Optional
 
 from src.agent import AgentRegistry, AgentStatus
+from src.orchestrator.release import ReleaseManager, ReleaseIDError
 
 router = APIRouter()
 registry = AgentRegistry()
+release_manager = ReleaseManager()
 
 
 @router.get("/agents")
@@ -53,6 +55,35 @@ async def stop_agent(agent_id: str):
 @router.get("/agents/count")
 async def agent_count():
     return {"count": registry.count()}
+
+
+@router.post("/releases")
+async def create_release(name: str, target_agent: str, config: Optional[Dict] = None, release_id: Optional[str] = None):
+    if release_id is not None:
+        raise HTTPException(status_code=400, detail="Release IDs must be auto-generated and immutable; user-supplied IDs are not accepted")
+    release = release_manager.create_release(name=name, target_agent=target_agent, config=config)
+    return {"release_id": release.id, "name": release.name, "status": release.status}
+
+
+@router.get("/releases")
+async def list_releases():
+    releases = release_manager.list_releases()
+    return {"releases": [{"id": r.id, "name": r.name, "status": r.status, "target_agent": r.target_agent} for r in releases]}
+
+
+@router.get("/releases/{release_id}")
+async def get_release(release_id: str):
+    release = release_manager.get_release(release_id)
+    if not release:
+        raise HTTPException(status_code=404, detail="Release not found")
+    return {"id": release.id, "name": release.name, "status": release.status, "target_agent": release.target_agent}
+
+
+@router.delete("/releases/{release_id}")
+async def delete_release(release_id: str):
+    if not release_manager.delete_release(release_id):
+        raise HTTPException(status_code=404, detail="Release not found")
+    return {"status": "deleted"}
 
 # 2019-03-18T11:10:18 update
 
