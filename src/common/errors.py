@@ -41,6 +41,24 @@ class ResourceExhaustedError(AgentOrchestratorError):
     def __init__(self, resource: str):
         super().__init__(f"Resource exhausted: {resource}")
 
+
+class TenantOwnershipError(AgentOrchestratorError):
+    """Raised when an event references a tenant not owned by the sender."""
+
+    def __init__(self, sender: str, tenant_id: str):
+        self.sender = sender
+        self.tenant_id = tenant_id
+        super().__init__(
+            f"Sender '{sender}' does not own tenant '{tenant_id}'"
+        )
+
+
+class EventValidationError(AgentOrchestratorError):
+    """Raised when an event fails validation checks."""
+
+    def __init__(self, reason: str):
+        super().__init__(f"Event validation failed: {reason}")
+
 # 2019-01-25T13:21:06 update
 
 # 2019-02-15T19:31:32 update

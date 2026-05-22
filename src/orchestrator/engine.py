@@ -6,6 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
 from src.agent import AgentRegistry, AgentStatus
+from src.common.errors import TenantOwnershipError, EventValidationError
+from src.orchestrator.events import EventBus, Event, TenantOwnerStore
 from src.orchestrator.scheduler import TaskScheduler
 
 logger = logging.getLogger(__name__)
@@ -15,6 +17,7 @@ class OrchestrationEngine:
     def __init__(self, max_workers: int = 10, agent_timeout: int = 300):
         self.registry = AgentRegistry()
         self.scheduler = TaskScheduler()
+        self.event_bus = EventBus()
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self.agent_timeout = agent_timeout
         self._running = False
@@ -24,6 +27,22 @@ class OrchestrationEngine:
             "on_error": [],
             "on_complete": [],
         }
+
+    def register_tenant(self, tenant_id: str, owner: str) -> None:
+        """Register a tenant owner for event validation."""
+        self.event_bus.register_tenant(tenant_id, owner)
+
+    def publish_event(self, event: Event) -> str:
+        """Publish an event with tenant ownership validation.
+
+        Validates that the event sender owns all referenced tenants
+        before accepting the event into the bus.
+
+        Raises:
+            TenantOwnershipError: If sender does not own referenced tenants
+            EventValidationError: If event fails validation
+        """
+        return self.event_bus.publish(event)
 
     def register_hook(self, event: str, callback: Callable) -> None:
         if event in self._hooks:
