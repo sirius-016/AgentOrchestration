@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from src.agent import AgentRegistry, AgentStatus
 from src.orchestrator.scheduler import TaskScheduler
+from src.common.metadata import filter_internal_metadata, INTERNAL_FIELDS
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +48,11 @@ class OrchestrationEngine:
         agent_id = task["target_agent"]
         logger.info(f"Executing task {task_id} on agent {agent_id}")
 
+        # Filter internal metadata before passing to hooks
+        filtered_task = filter_internal_metadata(task)
+
         for hook in self._hooks["pre_execute"]:
-            await hook(task)
+            await hook(filtered_task)
 
         try:
             agent = self.registry.get(agent_id)
@@ -62,15 +66,20 @@ class OrchestrationEngine:
             )
             self.registry.update_status(agent_id, AgentStatus.PAUSED)
 
+            # Filter internal metadata from result before passing to hooks
+            filtered_result = filter_internal_metadata(result) if isinstance(result, dict) else result
+
             for hook in self._hooks["post_execute"]:
-                await hook(task, result)
+                await hook(filtered_task, filtered_result)
 
             logger.info(f"Task {task_id} completed successfully")
 
         except Exception as e:
             logger.error(f"Task {task_id} failed: {e}")
+            # Don't expose internal error details to hooks
+            safe_error = filter_internal_metadata({"error": str(e)}) if isinstance(e, dict) else {"error": str(e)}
             for hook in self._hooks["on_error"]:
-                await hook(task, e)
+                await hook(filtered_task, safe_error)
 
     async def _run_agent_task(self, agent: Dict, task: Dict) -> Any:
         loop = asyncio.get_event_loop()
