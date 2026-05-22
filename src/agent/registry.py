@@ -7,6 +7,14 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 
+class DuplicateCapabilityError(Exception):
+    """Raised when a duplicate capability name is registered."""
+
+    def __init__(self, name: str):
+        self.name = name
+        super().__init__(f"Duplicate capability name: '{name}'")
+
+
 class AgentStatus(Enum):
     PENDING = "pending"
     RUNNING = "running"
@@ -21,10 +29,33 @@ class AgentRegistry:
         self.storage_backend = storage_backend
         self._agents: Dict[str, Dict[str, Any]] = {}
         self._index: Dict[str, List[str]] = {}
+        self._capability_names: set = set()
+
+    @staticmethod
+    def validate_capability_names(capabilities: List[str]) -> None:
+        """Validate that capability names contain no duplicates.
+
+        Args:
+            capabilities: List of capability names to validate.
+
+        Raises:
+            DuplicateCapabilityError: If duplicate names are found.
+        """
+        seen = set()
+        for name in capabilities:
+            if name in seen:
+                raise DuplicateCapabilityError(name)
+            seen.add(name)
 
     def register(self, name: str, agent_type: str, config: Optional[Dict] = None) -> str:
+        capabilities = config.get("capabilities", []) if config else []
+        self.validate_capability_names(capabilities)
+        for cap in capabilities:
+            if cap in self._capability_names:
+                raise DuplicateCapabilityError(cap)
         agent_id = str(uuid.uuid4())
         timestamp = time.time()
+        self._capability_names.update(capabilities)
         self._agents[agent_id] = {
             "id": agent_id,
             "name": name,
@@ -65,6 +96,9 @@ class AgentRegistry:
         if agent_id not in self._agents:
             return False
         agent = self._agents.pop(agent_id)
+        capabilities = agent.get("config", {}).get("capabilities", [])
+        for cap in capabilities:
+            self._capability_names.discard(cap)
         group = agent["type"].split(".")[0]
         if group in self._index and agent_id in self._index[group]:
             self._index[group].remove(agent_id)

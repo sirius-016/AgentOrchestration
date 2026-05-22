@@ -1,5 +1,5 @@
 import pytest
-from src.agent.registry import AgentRegistry, AgentStatus
+from src.agent.registry import AgentRegistry, AgentStatus, DuplicateCapabilityError
 
 
 class TestAgentRegistry:
@@ -47,6 +47,63 @@ class TestAgentRegistry:
 
     def test_delete_nonexistent_agent(self):
         assert not self.registry.delete("nonexistent-id")
+
+    def test_register_duplicate_capability_names_rejected(self):
+        """Duplicate capability names within a single registration are rejected."""
+        with pytest.raises(DuplicateCapabilityError):
+            self.registry.register(
+                "agent-1", "worker.processor",
+                {"capabilities": ["compute", "analyze", "compute"]},
+            )
+
+    def test_register_duplicate_capability_across_agents_rejected(self):
+        """Duplicate capability names across registrations are rejected."""
+        self.registry.register(
+            "agent-1", "worker.processor",
+            {"capabilities": ["compute"]},
+        )
+        with pytest.raises(DuplicateCapabilityError):
+            self.registry.register(
+                "agent-2", "worker.analyzer",
+                {"capabilities": ["compute"]},
+            )
+
+    def test_register_unique_capability_names_accepted(self):
+        """Unique capability names are accepted across registrations."""
+        id1 = self.registry.register(
+            "agent-1", "worker.processor",
+            {"capabilities": ["compute"]},
+        )
+        id2 = self.registry.register(
+            "agent-2", "worker.analyzer",
+            {"capabilities": ["analyze"]},
+        )
+        assert id1 is not None
+        assert id2 is not None
+        assert self.registry.count() == 2
+
+    def test_register_agent_without_capabilities(self):
+        """Agents without capabilities register normally."""
+        agent_id = self.registry.register("agent-1", "worker.processor")
+        assert agent_id is not None
+
+    def test_delete_agent_removes_capability_names(self):
+        """Deleting an agent frees its capability names for reuse."""
+        self.registry.register(
+            "agent-1", "worker.processor",
+            {"capabilities": ["compute"]},
+        )
+        agent_id = self.registry.register(
+            "agent-2", "worker.analyzer",
+            {"capabilities": ["analyze"]},
+        )
+        self.registry.delete(agent_id)
+        # "analyze" was freed, should be registrable again
+        id3 = self.registry.register(
+            "agent-3", "monitor.watcher",
+            {"capabilities": ["analyze"]},
+        )
+        assert id3 is not None
 
 # 2019-01-23T10:28:57 update
 
